@@ -11,6 +11,10 @@ Resources:
             Principal:
               Service: lambda.amazonaws.com
             Action: "sts:AssumeRole"
+  AthenaResultsLocation:
+    Description: S3 location for Athena query results. replace it with your unique S3 bucket name.
+    Type: String
+    Default: s3://datalake.staging.liveproject/athena/
 
   MyLambdaFunction:
     Type: "AWS::Lambda::Function"
@@ -90,7 +94,7 @@ Resources:
                     "QueryString": "CREATE DATABASE if not exists mydatabase",
                     "WorkGroup": "primary",
                     "ResultConfiguration": {
-                      "OutputLocation": "s3://datalake.staging.liveproject/athena/"
+                      "OutputLocation": "${AthenaResultsLocation}"
                     }
                   },
                   "Type": "Task",
@@ -102,7 +106,7 @@ Resources:
                     "QueryString": "show tables in mydatabase",
                     "WorkGroup": "primary",
                     "ResultConfiguration": {
-                      "OutputLocation": "s3://datalake.staging.liveproject/athena/"
+                      "OutputLocation": "${AthenaResultsLocation}"
                     }
                   },
                   "Type": "Task",
@@ -141,7 +145,7 @@ Resources:
                     "QueryString": "create or replace view mydatabase.my_view as select 1 as user_id; ",
                     "WorkGroup": "primary",
                     "ResultConfiguration": {
-                      "OutputLocation": "s3://datalake.staging.liveproject/athena/"
+                      "OutputLocation": "${AthenaResultsLocation}"
                     }
                   },
                   "Type": "Task",
@@ -153,7 +157,7 @@ Resources:
                     "QueryString": "select 2; ",
                     "WorkGroup": "primary",
                     "ResultConfiguration": {
-                      "OutputLocation": "s3://datalake.staging.liveproject/athena/"
+                      "OutputLocation": "${AthenaResultsLocation}"
                     }
                   },
                   "Type": "Task",
@@ -161,7 +165,10 @@ Resources:
                 }
               }
             }
-          - {lambdaArn: !GetAtt [ MyLambdaFunction, Arn ]}
+          - {
+            lambdaArn: !GetAtt [ MyLambdaFunction, Arn ],
+            AthenaResultsLocation: !Ref AthenaResultsLocation
+            }
       RoleArn: !GetAtt [ StatesExecutionRole, Arn ]
       Tags:
         -
