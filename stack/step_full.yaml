@@ -1,0 +1,289 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: An example template for a Step Functions state machine.
+Parameters:
+
+  DataLocation:
+    Description: Data lake bucket with source data files.
+    Type: String
+    Default: s3://datalake.staging.liveproject/data/
+  AthenaResultsLocation:
+    Description: S3 location for Athena query results.
+    Type: String
+    Default: s3://datalake.staging.liveproject/athena/
+  AthenaDatabaseName:
+    Description: Athena schema names for ETL pipeline.
+    Type: String
+    Default: mydatabase
+  S3LambdaBucket:
+    Description: Use this bucket to keep your Lambda package.
+    Type: String
+    Default: datalake.staging.liveproject
+  S3LambdaKey:
+    Description: Use this bucket to keep your Lambda package.
+    Type: String
+    Default: lambdas/mysql_connector/stack.zip
+
+Resources:
+  LambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+
+  MyLambdaFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Handler: "index.handler"
+      Role: !GetAtt [ LambdaExecutionRole, Arn ]
+      Code:
+        ZipFile: |
+          exports.handler = (event, context, callback) => {
+              callback(null, "Hello World!");
+          };
+      Runtime: "nodejs12.x"
+      Timeout: "25"
+
+### MySQL Connector Lmabda ###
+  MySqlConnectorLambda:
+    Type: AWS::Lambda::Function
+    DeletionPolicy: Delete
+    Properties:
+      FunctionName: mysql-lambda
+      Handler: mysql_connector/app.lambda_handler
+      Description: Microservice that orchestrates SQL query execution.
+      Environment:
+        Variables:
+          DEBUG: true
+      Role: !GetAtt [ LambdaExecutionRole, Arn ]
+      Code:
+        S3Bucket:
+          Ref: S3LambdaBucket
+        S3Key:
+          Ref: S3LambdaKey # pipeline_manager/stack.zip
+        # S3Key:
+          # Ref: StackPackageS3Key
+      Runtime: python3.8
+      Timeout: 300
+      MemorySize: 128
+      Tags:
+        -
+          Key: Service
+          Value: Datalake
+
+  StatesExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - !Sub states.${AWS::Region}.amazonaws.com
+            Action: "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: StatesExecutionPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "lambda:InvokeFunction"
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - "athena:*"
+                  # - "athena:GetQueryResults"
+                  # - "athena:StartQueryExecution"
+                  # - "athena:GetWorkGroup"
+                  # - "athena:StopQueryExecution"
+                  # - "athena:GetQueryExecution"
+                  # # etc. example role with fine permissions:
+                  # # https://us-east-1.console.aws.amazon.com/iamv2/home#/roles/details/StepFunctions-MyStateMachine-role-933f5038?section=permissions
+                  # # https://docs.aws.amazon.com/athena/latest/ug/udf-iam-access.html
+
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - "s3:*"
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - "glue:*"
+                Resource: "*"
+
+  MyStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: ETL-StateMachine
+      DefinitionString:
+        !Sub
+          - |-
+            {
+              "Comment": "A Hello World example using an AWS Lambda function",
+              "StartAt": "HelloWorld",
+              "States": {
+                "HelloWorld": {
+                  "Type": "Task",
+                  "Resource": "${lambdaArn}",
+                  "Next": "Extract from MySQL"
+                },
+                "Extract from MySQL": {
+                  "Resource": "${MySQLLambdaArn}",
+                  "Type": "Task",
+                  "Next": "Create Athena DB"
+                },
+                "Create Athena DB": {
+                  "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+                  "Parameters": {
+                    "QueryString": "CREATE DATABASE if not exists ${AthenaDatabaseName}",
+                    "WorkGroup": "primary",
+                    "ResultConfiguration": {
+                      "OutputLocation": "${AthenaResultsLocation}"
+                    }
+                  },
+                  "Type": "Task",
+                  "Next": "Show tables"
+                },
+                "Show tables": {
+                  "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+                  "Parameters": {
+                    "QueryString": "show tables in ${AthenaDatabaseName}",
+                    "WorkGroup": "primary",
+                    "ResultConfiguration": {
+                      "OutputLocation": "${AthenaResultsLocation}"
+                    }
+                  },
+                  "Type": "Task",
+                  "Next": "Get Show tables query results"
+                },
+                "Get Show tables query results": {
+                  "Resource": "arn:aws:states:::athena:getQueryResults",
+                  "Parameters": {
+                    "QueryExecutionId.$": "$.QueryExecution.QueryExecutionId"
+                  },
+                  "Type": "Task",
+                  "Next": "Decide what next"
+                },
+                "Decide what next": {
+                  "Comment": "Based on the input table name, a choice is made for moving to the next step.",
+                  "Type": "Choice",
+                  "Choices": [
+                    {
+                      "Not": {
+                        "Variable": "$.ResultSet.Rows[0].Data[0].VarCharValue",
+                        "IsPresent": true
+                      },
+                      "Next": "Create users table (external)"
+                    },
+                    {
+                      "Variable": "$.ResultSet.Rows[0].Data[0].VarCharValue",
+                      "IsPresent": true,
+                      "Next": "Check All Tables"
+                    }
+                  ],
+                  "Default": "Check All Tables"
+                },
+                "Create users table (external)": {
+                  "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+                  "Parameters": {
+                    "QueryString": "CREATE EXTERNAL TABLE ${AthenaDatabaseName}.users ( id                bigint , registration_date string ) ROW FORMAT DELIMITED FIELDS TERMINATED BY ',' STORED AS INPUTFORMAT   'org.apache.hadoop.mapred.TextInputFormat' OUTPUTFORMAT   'org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat' LOCATION  's3://datalake.staging.liveproject/data/myschema/users/' TBLPROPERTIES (  'skip.header.line.count'='0') ;",
+                    "WorkGroup": "primary",
+                    "ResultConfiguration": {
+                      "OutputLocation": "${AthenaResultsLocation}"
+                    }
+                  },
+                  "Type": "Task",
+                  "Next": "Create transactions table (external)"
+                },
+                "Create transactions table (external)": {
+                  "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+                  "Parameters": {
+                    "QueryString": "CREATE EXTERNAL TABLE ${AthenaDatabaseName}.transactions ( transaction_id    bigint , user_id           bigint , total_cost        double , dt                string ) ROW FORMAT DELIMITED FIELDS TERMINATED BY ',' STORED AS INPUTFORMAT   'org.apache.hadoop.mapred.TextInputFormat' OUTPUTFORMAT   'org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat' LOCATION  's3://datalake.staging.liveproject/data/myschema/transactions/' TBLPROPERTIES (  'skip.header.line.count'='0') ;",
+                    "WorkGroup": "primary",
+                    "ResultConfiguration": {
+                      "OutputLocation": "${AthenaResultsLocation}"
+                    }
+                  },
+                  "Type": "Task",
+                  "Next": "Create report table (parquet)"
+                },
+                "Create report table (parquet)": {
+                  "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+                  "Parameters": {
+                    "QueryString": "CREATE TABLE IF NOT EXISTS ${AthenaDatabaseName}.user_transactions ( dt date, user_id int, total_cost_usd float, registration_date string ) PARTITIONED BY (dt) LOCATION 's3://datalake.staging.liveproject/data/myschema/optimized-data-iceberg-parquet/' TBLPROPERTIES ( 'table_type'='ICEBERG', 'format'='parquet', 'write_target_data_file_size_bytes'='536870912', 'optimize_rewrite_delete_file_threshold'='10' ) ;",
+                    "WorkGroup": "primary",
+                    "ResultConfiguration": {
+                      "OutputLocation": "${AthenaResultsLocation}"
+                    }
+                  },
+                  "Type": "Task",
+                  "End": true
+                },
+                "Check All Tables": {
+                  "Type": "Map",
+                  "InputPath": "$.ResultSet",
+                  "ItemsPath": "$.Rows",
+                  "MaxConcurrency": 0,
+                  "Iterator": {
+                    "StartAt": "CheckTable",
+                    "States": {
+                      "CheckTable": {
+                        "Type": "Choice",
+                        "Choices": [
+                          {
+                            "Variable": "$.Data[0].VarCharValue",
+                            "StringMatches": "*users",
+                            "Next": "passstep"
+                          },
+                          {
+                            "Variable": "$.Data[0].VarCharValue",
+                            "StringMatches": "*user_transactions",
+                            "Next": "Insert New parquet Data"
+                          }
+                        ],
+                        "Default": "passstep"
+                      },
+                      "Insert New parquet Data": {
+                        "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+                        "Parameters": {
+                          "QueryString": "MERGE INTO ${AthenaDatabaseName}.user_transactions  as ut USING ( SELECT date(dt) dt , user_id , sum(total_cost) total_cost_usd , registration_date FROM ${AthenaDatabaseName}.transactions LEFT JOIN ${AthenaDatabaseName}.users ON users.id = transactions.user_id GROUP BY dt , user_id , registration_date ) as ut2 ON (ut.dt = ut2.dt and ut.user_id = ut2.user_id) WHEN MATCHED THEN UPDATE SET total_cost_usd = ut2.total_cost_usd, registration_date = ut2.registration_date WHEN NOT MATCHED THEN INSERT ( dt ,user_id ,total_cost_usd ,registration_date ) VALUES ( ut2.dt ,ut2.user_id ,ut2.total_cost_usd ,ut2.registration_date ) ;",
+                          "WorkGroup": "primary",
+                          "ResultConfiguration": {
+                            "OutputLocation": "${AthenaResultsLocation}"
+                          }
+                        },
+                        "Type": "Task",
+                        "End": true
+                      },
+                      "passstep": {
+                        "Type": "Pass",
+                        "Result": "NA",
+                        "End": true
+                      }
+                    }
+                  },
+                  "End": true
+                }
+              }
+            }
+          - {
+            lambdaArn: !GetAtt [ MyLambdaFunction, Arn ],
+            MySQLLambdaArn: !GetAtt [ MySqlConnectorLambda, Arn ],
+            AthenaResultsLocation: !Ref AthenaResultsLocation,
+            AthenaDatabaseName: !Ref AthenaDatabaseName
+          }
+      RoleArn: !GetAtt [ StatesExecutionRole, Arn ]
+      Tags:
+        -
+          Key: "keyname1"
+          Value: "value1"
+        -
+          Key: "keyname2"
+          Value: "value2"
