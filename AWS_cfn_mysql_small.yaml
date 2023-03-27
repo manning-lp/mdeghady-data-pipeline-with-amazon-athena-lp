@@ -1,0 +1,110 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  AWS CloudFormation Sample Template: Sample template showing how to
+  create an Amazon RDS Database Instance with provisioned IOPs.**WARNING** This
+  template creates an Amazon Relational Database Service database instance. You
+  will be billed for the AWS resources used if you create a stack from this
+  template.
+Parameters:
+  DBUser:
+    Default: root
+    NoEcho: 'true'
+    Description: The database admin account username
+    Type: String
+    MinLength: '1'
+    MaxLength: '16'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    ConstraintDescription: must begin with a letter and contain only alphanumeric characters.
+  DBPassword:
+    Default: AmazingPassword
+    NoEcho: 'true'
+    Description: The database admin account password
+    Type: String
+    MinLength: '8'
+    MaxLength: '41'
+    AllowedPattern: '[a-zA-Z0-9]*'
+    ConstraintDescription: must contain only alphanumeric characters.
+Resources:
+### Role to output into s3
+  MySQLRDSExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - !Sub rds.amazonaws.com # https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.IAM.ServiceLinkedRoles.html
+            Action: "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: MySQLRDSExecutionPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:*"
+                Resource: "*"
+###
+
+  RDSCluster: 
+    Properties: 
+      DBClusterParameterGroupName: 
+        Ref: RDSDBClusterParameterGroup
+      # DBSubnetGroupName: 
+      #   Ref: DBSubnetGroup
+      # Engine: aurora
+      Engine: aurora-mysql
+      MasterUserPassword: 
+        Ref: DBPassword
+      MasterUsername: 
+        Ref: DBUser
+
+### Add a role to export to s3
+      AssociatedRoles:
+        # - FeatureName: s3Export # S3Import # add-role-to-db-cluster --db-cluster-identifier aurora-postgres-cl --feature-name s3Export --role-arn arn:aws:iam::123456789012:role/aurora-s3-export-role
+        #   RoleArn: !GetAtt [ MySQLRDSExecutionRole, Arn ] #'arn:aws:iam::123456789012:role/RDSLoadFromS3'
+        - RoleArn: !GetAtt [ MySQLRDSExecutionRole, Arn ]
+###
+    Type: "AWS::RDS::DBCluster"
+  RDSDBClusterParameterGroup: 
+    Properties: 
+      Description: "CloudFormation Sample Aurora Cluster Parameter Group"
+      # Family: aurora5.6 # if you need 5.6 and adjust Family in parameter group.
+      Family: aurora-mysql5.7
+      Parameters: 
+        time_zone: US/Eastern
+        ### Add a role to export to s3
+        aws_default_s3_role: !GetAtt [ MySQLRDSExecutionRole, Arn ]
+        ###
+    Type: "AWS::RDS::DBClusterParameterGroup"
+  RDSDBInstance1:
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      DBClusterIdentifier: 
+        Ref: RDSCluster
+      # AllocatedStorage: '20'
+      DBInstanceClass: db.t2.small
+      # Engine: aurora
+      Engine: aurora-mysql
+      PubliclyAccessible: "true"
+      DBInstanceIdentifier: MyMySQLDB
+  RDSDBParameterGroup:
+    Type: 'AWS::RDS::DBParameterGroup'
+    Properties:
+      Description: CloudFormation Sample Aurora Parameter Group
+      # Family: aurora5.6
+      Family: aurora-mysql5.7
+      Parameters:
+        sql_mode: IGNORE_SPACE
+        max_allowed_packet: 1024
+        innodb_buffer_pool_size: '{DBInstanceClassMemory*3/4}'
+# Aurora instances need to be associated with a AWS::RDS::DBCluster via DBClusterIdentifier without the cluster you get these generic errors
+
+
+
+
+
+

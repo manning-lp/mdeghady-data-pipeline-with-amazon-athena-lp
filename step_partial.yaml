@@ -1,0 +1,172 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: An example template for a Step Functions state machine.
+Resources:
+  LambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+
+  MyLambdaFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Handler: "index.handler"
+      Role: !GetAtt [ LambdaExecutionRole, Arn ]
+      Code:
+        ZipFile: |
+          exports.handler = (event, context, callback) => {
+              callback(null, "Hello World!");
+          };
+      Runtime: "nodejs12.x"
+      Timeout: "25"
+
+  StatesExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - !Sub states.${AWS::Region}.amazonaws.com
+            Action: "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: StatesExecutionPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "lambda:InvokeFunction"
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - "athena:*"
+                  # - "athena:GetQueryResults"
+                  # - "athena:StartQueryExecution"
+                  # - "athena:GetWorkGroup"
+                  # - "athena:StopQueryExecution"
+                  # - "athena:GetQueryExecution"
+                  # # etc. example role with fine permissions:
+                  # # https://us-east-1.console.aws.amazon.com/iamv2/home#/roles/details/StepFunctions-MyStateMachine-role-933f5038?section=permissions
+                  # # https://docs.aws.amazon.com/athena/latest/ug/udf-iam-access.html
+
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - "s3:*"
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - "glue:*"
+                Resource: "*"
+
+  MyStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: ETL-StateMachine
+      DefinitionString:
+        !Sub
+          - |-
+            {
+              "Comment": "A Hello World example using an AWS Lambda function",
+              "StartAt": "HelloWorld",
+              "States": {
+                "HelloWorld": {
+                  "Type": "Task",
+                  "Resource": "${lambdaArn}",
+                  "Next": "Create Athena DB"
+                },
+                "Create Athena DB": {
+                  "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+                  "Parameters": {
+                    "QueryString": "CREATE DATABASE if not exists mydatabase",
+                    "WorkGroup": "primary",
+                    "ResultConfiguration": {
+                      "OutputLocation": "s3://datalake.staging.liveproject/athena/"
+                    }
+                  },
+                  "Type": "Task",
+                  "Next": "Show tables"
+                },
+                "Show tables": {
+                  "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+                  "Parameters": {
+                    "QueryString": "show tables in mydatabase",
+                    "WorkGroup": "primary",
+                    "ResultConfiguration": {
+                      "OutputLocation": "s3://datalake.staging.liveproject/athena/"
+                    }
+                  },
+                  "Type": "Task",
+                  "Next": "Get Show tables query results"
+                },
+                "Get Show tables query results": {
+                  "Resource": "arn:aws:states:::athena:getQueryResults",
+                  "Parameters": {
+                    "QueryExecutionId.$": "$.QueryExecution.QueryExecutionId"
+                  },
+                  "Type": "Task",
+                  "Next": "Decide what next"
+                },
+                "Decide what next": {
+                  "Comment": "Based on the input table name, a choice is made for moving to the next step.",
+                  "Type": "Choice",
+                  "Choices": [
+                    {
+                      "Not": {
+                        "Variable": "$.ResultSet.Rows[0].Data[0].VarCharValue",
+                        "IsPresent": true
+                      },
+                      "Next": "Run Create Table Query"
+                    },
+                    {
+                      "Variable": "$.ResultSet.Rows[0].Data[0].VarCharValue",
+                      "IsPresent": true,
+                      "Next": "Check All Tables"
+                    }
+                  ],
+                  "Default": "Check All Tables"
+                },
+                "Run Create Table Query": {
+                  "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+                  "Parameters": {
+                    "QueryString": "create or replace view mydatabase.my_view as select 1 as user_id; ",
+                    "WorkGroup": "primary",
+                    "ResultConfiguration": {
+                      "OutputLocation": "s3://datalake.staging.liveproject/athena/"
+                    }
+                  },
+                  "Type": "Task",
+                  "End": true
+                },
+                "Check All Tables": {
+                  "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+                  "Parameters": {
+                    "QueryString": "select 2; ",
+                    "WorkGroup": "primary",
+                    "ResultConfiguration": {
+                      "OutputLocation": "s3://datalake.staging.liveproject/athena/"
+                    }
+                  },
+                  "Type": "Task",
+                  "End": true
+                }
+              }
+            }
+          - {lambdaArn: !GetAtt [ MyLambdaFunction, Arn ]}
+      RoleArn: !GetAtt [ StatesExecutionRole, Arn ]
+      Tags:
+        -
+          Key: "keyname1"
+          Value: "value1"
+        -
+          Key: "keyname2"
+          Value: "value2"
