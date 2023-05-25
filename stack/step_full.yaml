@@ -18,10 +18,24 @@ Parameters:
     Description: Use this bucket to keep your Lambda package.
     Type: String
     Default: datalake.staging.liveproject
-  S3LambdaKey:
-    Description: Use this bucket to keep your Lambda package.
+  StackPackageS3Key:
     Type: String
-    Default: lambdas/mysql_connector/stack.zip
+    Default: mysql_connector/stack.zip
+  ServiceName:
+    Type: String
+    Default: mysql-connector
+  Testing:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true','false']
+  Environment:
+    Type: String
+    Default: 'staging'
+    AllowedValues: ['staging','live','test']
+  AppFolder:
+    Description: app.py file location inside the package, i.e. mysql_connector when ./stack/mysql_connector/app.py.
+    Type: String
+    Default: mysql_connector
 
 Resources:
   LambdaExecutionRole:
@@ -45,30 +59,31 @@ Resources:
           exports.handler = (event, context, callback) => {
               callback(null, "Hello World!");
           };
-      Runtime: "nodejs12.x"
+      Runtime: "nodejs18.x"
       Timeout: "25"
 
 ### MySQL Connector Lmabda ###
   MySqlConnectorLambda:
     Type: AWS::Lambda::Function
     DeletionPolicy: Delete
+    DependsOn: LambdaPolicy
     Properties:
-      FunctionName: mysql-lambda
-      Handler: mysql_connector/app.lambda_handler
-      Description: Microservice that orchestrates SQL query execution.
+      FunctionName: !Join ['-', [!Ref ServiceName, !Ref Environment] ]
+      Handler: !Sub '${AppFolder}/app.lambda_handler'
+      Description: Microservice that extracts data from RDS.
       Environment:
         Variables:
           DEBUG: true
-      Role: !GetAtt [ LambdaExecutionRole, Arn ]
+          LAMBDA_PATH: !Sub '${AppFolder}/'
+          TESTING: !Ref Testing
+          ENV: !Ref Environment
+      Role: !GetAtt LambdaRole.Arn
       Code:
-        S3Bucket:
-          Ref: S3LambdaBucket
+        S3Bucket: !Sub '${S3LambdaBucket}'
         S3Key:
-          Ref: S3LambdaKey # pipeline_manager/stack.zip
-        # S3Key:
-          # Ref: StackPackageS3Key
+          Ref: StackPackageS3Key
       Runtime: python3.8
-      Timeout: 300
+      Timeout: 360
       MemorySize: 128
       Tags:
         -
@@ -121,7 +136,8 @@ Resources:
   MyStateMachine:
     Type: AWS::StepFunctions::StateMachine
     Properties:
-      StateMachineName: ETL-StateMachine
+      # StateMachineName: ETL-StateMachine
+      StateMachineName: !Join ['-', ['ETL-StateMachine', !Ref ServiceName, !Ref Environment] ]
       DefinitionString:
         !Sub
           - |-
@@ -287,3 +303,41 @@ Resources:
         -
           Key: "keyname2"
           Value: "value2"
+
+# IAM role for mysql-data-connector Lambda:
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+
+  LambdaPolicy:
+    Type: AWS::IAM::Policy
+    DependsOn: LambdaRole
+    Properties:
+      Roles:
+        - !Ref LambdaRole
+      PolicyName: !Join ['-', [!Ref ServiceName, !Ref Environment, 'lambda-policy']] 
+      PolicyDocument:
+        {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "logs:CreateLogGroup",
+                        "logs:CreateLogStream",
+                        "logs:PutLogEvents"
+                    ],
+                    "Resource": "*"
+                }
+            ]
+        }
