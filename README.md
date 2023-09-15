@@ -1,2 +1,2 @@
-# data-pipeline-with-aws-athena-lp-author
-Repository for liveProject: Data Pipeline with AWS Athena
+# data-pipeline-with-amazon-athena-lp-author
+Repository for liveProject: Data Pipeline with Amazon Athena
