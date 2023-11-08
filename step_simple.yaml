@@ -22,7 +22,7 @@ Resources:
           exports.handler = (event, context, callback) => {
               callback(null, "Hello World!");
           };
-      Runtime: "nodejs12.x"
+      Runtime: "nodejs18.x" #changed from nodejs12.x to nodejs18.x
       Timeout: "25"
 
   StatesExecutionRole:
