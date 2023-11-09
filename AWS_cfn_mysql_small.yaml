@@ -49,8 +49,21 @@ Resources:
                 Resource: "*"
 ###
 
+  ### DBInstance Security Group
+  DBEC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Open database for access
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 3306
+        ToPort: 3306
+        CidrIp: 0.0.0.0/0
+
   RDSCluster: 
-    Properties: 
+    Properties:
+      VpcSecurityGroupIds:
+        - !GetAtt DBEC2SecurityGroup.GroupId 
       DBClusterParameterGroupName: 
         Ref: RDSDBClusterParameterGroup
       # DBSubnetGroupName: 
@@ -62,13 +75,15 @@ Resources:
       MasterUsername: 
         Ref: DBUser
 
-### Add a role to export to s3
+      ### Add a role to export to s3
       AssociatedRoles:
         # - FeatureName: s3Export # S3Import # add-role-to-db-cluster --db-cluster-identifier aurora-postgres-cl --feature-name s3Export --role-arn arn:aws:iam::123456789012:role/aurora-s3-export-role
         #   RoleArn: !GetAtt [ MySQLRDSExecutionRole, Arn ] #'arn:aws:iam::123456789012:role/RDSLoadFromS3'
         - RoleArn: !GetAtt [ MySQLRDSExecutionRole, Arn ]
-###
+    ###
     Type: "AWS::RDS::DBCluster"
+    
+
   RDSDBClusterParameterGroup: 
     Properties: 
       Description: "CloudFormation Sample Aurora Cluster Parameter Group"
@@ -80,6 +95,9 @@ Resources:
         aws_default_s3_role: !GetAtt [ MySQLRDSExecutionRole, Arn ]
         ###
     Type: "AWS::RDS::DBClusterParameterGroup"
+
+  
+  ## DB INstance
   RDSDBInstance1:
     Type: 'AWS::RDS::DBInstance'
     Properties:
@@ -91,6 +109,9 @@ Resources:
       Engine: aurora-mysql
       PubliclyAccessible: "true"
       DBInstanceIdentifier: MyMySQLDB
+      
+
+
   RDSDBParameterGroup:
     Type: 'AWS::RDS::DBParameterGroup'
     Properties:
