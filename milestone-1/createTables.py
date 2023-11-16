@@ -1,6 +1,6 @@
 import pymysql
 
-HOST = "mysqldb-rdscluster-jik4katlpgu8.cluster-cnsvu2edmlyg.us-east-1.rds.amazonaws.com"
+HOST = "mysqldb-rdscluster-tnw2kz7v8ep4.cluster-ro-cnsvu2edmlyg.us-east-1.rds.amazonaws.com"
 USER = "root"
 PASSWORD = "AmazingPassword"
 def mysqlconnect():
